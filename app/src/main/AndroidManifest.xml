@@ -28,7 +28,7 @@
         <activity
             android:name=".PlaybackActivity"
             android:configChanges="orientation|screenSize"
-            android:screenOrientation="landscape"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.CamVideoPlayback.Fullscreen" />
     </application>
 

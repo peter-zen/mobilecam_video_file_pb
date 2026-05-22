@@ -4,11 +4,14 @@ import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.icatchtek.pancam.customer.ICatchIPancamVideoPlayback
@@ -47,12 +50,12 @@ class PlaybackActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Fullscreen + landscape
+        // Fullscreen + portrait
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         supportActionBar?.hide()
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
 
         cameraIp = intent.getStringExtra(EXTRA_IP)
         videoFileName = intent.getStringExtra(EXTRA_FILENAME)
@@ -60,6 +63,10 @@ class PlaybackActivity : AppCompatActivity() {
         if (cameraIp.isNullOrBlank() || videoFileName.isNullOrBlank()) {
             showErrorAndFinish("Missing IP or filename")
             return
+        }
+
+        val rootLayout = FrameLayout(this).apply {
+            setBackgroundColor(0xFF000000.toInt())
         }
 
         surfaceView = SurfaceView(this).apply {
@@ -90,7 +97,17 @@ class PlaybackActivity : AppCompatActivity() {
                 }
             })
         }
-        setContentView(surfaceView)
+
+        // Layout: full width, aspect ratio height, vertically centered
+        val screenWidth = resources.displayMetrics.widthPixels
+        val videoHeight = (screenWidth * 9.0 / 16.0).toInt()
+        val layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            videoHeight,
+            Gravity.CENTER
+        )
+        rootLayout.addView(surfaceView, layoutParams)
+        setContentView(rootLayout)
     }
 
     private fun startPlayback(ip: String, fileName: String) {
