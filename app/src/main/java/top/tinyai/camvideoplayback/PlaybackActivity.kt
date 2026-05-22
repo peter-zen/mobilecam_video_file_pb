@@ -19,6 +19,7 @@ import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import com.icatchtek.pancam.customer.ICatchIPancamControl
 import com.icatchtek.pancam.customer.ICatchIPancamListener
@@ -61,6 +62,7 @@ class PlaybackActivity : AppCompatActivity() {
     private var currentPosition = 0.0
     private var controlsVisible = false
     private var isSeeking = false
+    private var seekTargetPosition = -1.0
     private var cameraIp: String? = null
     private var videoFileName: String? = null
     private var isReleased = false
@@ -77,14 +79,27 @@ class PlaybackActivity : AppCompatActivity() {
         override fun eventNotify(event: ICatchGLEvent) {
             when (event.eventID) {
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_STATUS -> {
-                    currentPosition = event.doubleValue1
-                    if (!isSeeking) {
-                        mainHandler.post {
-                            if (!isReleased && totalDuration > 0) {
-                                val progress = (currentPosition / totalDuration * 1000).toInt()
-                                seekBar.progress = progress.coerceIn(0, 1000)
-                                updateTimeText(currentPosition, totalDuration)
-                            }
+                    val pts = event.doubleValue1
+                    Log.d(TAG, "event pts=$pts, isSeeking=$isSeeking, currentPosition=$currentPosition, seekTarget=$seekTargetPosition")
+                    if (isSeeking) {
+                        val jumpedToTarget = seekTargetPosition >= 0 && kotlin.math.abs(pts - seekTargetPosition) < 2.0
+                        val bigJump = kotlin.math.abs(pts - currentPosition) > 3.0
+                        if (jumpedToTarget || bigJump) {
+                            isSeeking = false
+                            seekTargetPosition = -1.0
+                            Log.d(TAG, "seek生效: jumpedToTarget=$jumpedToTarget, bigJump=$bigJump")
+                        } else {
+                            // 还是旧位置，忽略事件，保持seek bar在用户拖动的位置
+                            currentPosition = pts
+                            return
+                        }
+                    }
+                    currentPosition = pts
+                    mainHandler.post {
+                        if (!isReleased && totalDuration > 0) {
+                            val progress = (currentPosition / totalDuration * 1000).toInt()
+                            seekBar.progress = progress.coerceIn(0, 1000)
+                            updateTimeText(currentPosition, totalDuration)
                         }
                     }
                 }
@@ -116,6 +131,7 @@ class PlaybackActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_IP = "ip"
         const val EXTRA_FILENAME = "filename"
+        private const val TAG = "PlaybackActivity"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -222,17 +238,28 @@ class PlaybackActivity : AppCompatActivity() {
 
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {
                     isSeeking = true
+                    Log.d(TAG, "seek start: progress=${seekBar?.progress}, isSeeking=true")
                     mainHandler.removeCallbacks(hideControlsRunnable)
                 }
 
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                    isSeeking = false
+                    val progress = seekBar?.progress ?: 0
                     if (totalDuration > 0) {
-                        val seekPos = seekBar!!.progress / 1000.0 * totalDuration
+                        val seekPos = progress / 1000.0 * totalDuration
+                        seekTargetPosition = seekPos
+                        Log.d(TAG, "seek stop: progress=$progress, target=$seekPos, isSeeking stays true")
                         executor.execute {
                             try {
+                                Log.d(TAG, "calling seek($seekPos)")
                                 videoPlayback?.seek(seekPos)
-                            } catch (_: Exception) {
+                                Log.d(TAG, "seek returned")
+                            } catch (e: Exception) {
+                                Log.d(TAG, "seek exception: ${e.message}")
+                                // seek失败，放开锁定
+                                mainHandler.post {
+                                    isSeeking = false
+                                    seekTargetPosition = -1.0
+                                }
                             }
                         }
                     }
