@@ -67,7 +67,6 @@ class PlaybackActivity : AppCompatActivity() {
     private var videoFileName: String? = null
     private var isReleased = false
 
-    private val hideControlsRunnable = Runnable { hideControls() }
     private val updateProgressRunnable = object : Runnable {
         override fun run() {
             updateProgress()
@@ -215,7 +214,7 @@ class PlaybackActivity : AppCompatActivity() {
             setBackgroundColor(0xCC000000.toInt())
             setPadding(24, 16, 24, 16)
             gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE
+            visibility = View.VISIBLE
         }
 
         playPauseBtn = ImageButton(this).apply {
@@ -239,7 +238,6 @@ class PlaybackActivity : AppCompatActivity() {
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {
                     isSeeking = true
                     Log.d(TAG, "seek start: progress=${seekBar?.progress}, isSeeking=true")
-                    mainHandler.removeCallbacks(hideControlsRunnable)
                 }
 
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
@@ -263,7 +261,6 @@ class PlaybackActivity : AppCompatActivity() {
                             }
                         }
                     }
-                    scheduleHideControls()
                 }
             })
         }
@@ -282,13 +279,16 @@ class PlaybackActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { marginStart = 16 })
 
+        val marginBottomPx = (48 * resources.displayMetrics.density).toInt()
         rootLayout.addView(
             controlBar,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM
-            )
+            ).apply {
+                bottomMargin = marginBottomPx
+            }
         )
 
         setContentView(rootLayout)
@@ -421,29 +421,13 @@ class PlaybackActivity : AppCompatActivity() {
     }
 
     private fun toggleControls() {
-        if (controlsVisible) {
-            hideControls()
-        } else {
-            showControls()
-        }
+        // Control bar is always visible; clicking surface does nothing.
     }
 
     private fun showControls() {
         if (isReleased) return
         controlBar.visibility = View.VISIBLE
         controlsVisible = true
-        scheduleHideControls()
-    }
-
-    private fun hideControls() {
-        controlBar.visibility = View.GONE
-        controlsVisible = false
-        mainHandler.removeCallbacks(hideControlsRunnable)
-    }
-
-    private fun scheduleHideControls() {
-        mainHandler.removeCallbacks(hideControlsRunnable)
-        mainHandler.postDelayed(hideControlsRunnable, 5000)
     }
 
     private fun updateProgress() {
@@ -471,7 +455,6 @@ class PlaybackActivity : AppCompatActivity() {
         if (isReleased) return
         isReleased = true
         mainHandler.removeCallbacks(updateProgressRunnable)
-        mainHandler.removeCallbacks(hideControlsRunnable)
         try {
             pancamControl?.removeEventListener(
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_STATUS,
