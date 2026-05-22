@@ -57,7 +57,7 @@ fun MainScreen() {
     val prefs = remember { context.getSharedPreferences("cam_playback", Context.MODE_PRIVATE) }
 
     var ip by remember { mutableStateOf(prefs.getString("last_ip", "192.168.1.1") ?: "192.168.1.1") }
-    var filename by remember { mutableStateOf(prefs.getString("last_filename", "Go5_000000_20260101_000001.MP4") ?: "Go5_000000_20260101_000001.MP4") }
+    var filename by remember { mutableStateOf(prefs.getString("last_filename", "Go5_000001_20260522_165437.MP4") ?: "Go5_000001_20260522_165437.MP4") }
 
     val ipHistory = remember { loadHistory(prefs, "ip_history") }
     val fileHistory = remember { loadHistory(prefs, "file_history") }
