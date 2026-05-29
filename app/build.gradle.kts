@@ -3,6 +3,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val mobileCamSdkReleaseDir = rootProject.file("sdk/MobileCamSDK_post/integration")
+
 android {
     namespace = "top.tinyai.camvideoplayback"
     compileSdk {
@@ -35,6 +37,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets {
+        getByName("main") {
+            // Point directly to the external MobileCamSDK post release bundle under ../MobileCamSDK/dist/android-release-post/integration.
+            jniLibs.setSrcDirs(listOf(mobileCamSdkReleaseDir.resolve("jniLibs").path))
+        }
+    }
 }
 
 dependencies {
@@ -47,9 +56,10 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // MobileCamSDK (JAR + .so)
-    implementation(files("libs/ICatchtekReliant.jar"))
-    implementation(files("libs/ICatchtekVR.jar"))
+    // MobileCamSDK (JAR + .so) from the external android-release-post bundle.
+    implementation(files(mobileCamSdkReleaseDir.resolve("libs/ICatchtekReliant.jar")))
+    implementation(files(mobileCamSdkReleaseDir.resolve("libs/ICatchtekVR.jar")))
+    implementation(files(mobileCamSdkReleaseDir.resolve("libs/ICatchtekControl.jar")))
 
     // AppCompat for traditional Activity playback
     implementation("androidx.appcompat:appcompat:1.6.1")

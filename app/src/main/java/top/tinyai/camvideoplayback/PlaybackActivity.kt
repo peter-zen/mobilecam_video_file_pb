@@ -4,6 +4,7 @@ import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -21,6 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
+import com.icatchtek.pancam.customer.ICatchPancamLog
 import com.icatchtek.pancam.customer.ICatchIPancamControl
 import com.icatchtek.pancam.customer.ICatchIPancamListener
 import com.icatchtek.pancam.customer.ICatchIPancamVideoPlayback
@@ -30,9 +32,14 @@ import com.icatchtek.pancam.customer.type.ICatchGLEvent
 import com.icatchtek.pancam.customer.type.ICatchGLEventID
 import com.icatchtek.pancam.customer.type.ICatchGLColor
 import com.icatchtek.pancam.customer.type.ICatchGLDisplayPPI
+import com.icatchtek.pancam.customer.type.ICatchGLLogType
 import com.icatchtek.reliant.customer.transport.ICatchINETTransport
 import com.icatchtek.reliant.customer.type.ICatchFile
 import com.icatchtek.reliant.customer.type.ICatchFileType
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -66,6 +73,9 @@ class PlaybackActivity : AppCompatActivity() {
     private var cameraIp: String? = null
     private var videoFileName: String? = null
     private var isReleased = false
+    private val appLogLock = Any()
+    private var appLogFile: File? = null
+    private var lastPtsEventElapsedMs = -1L
 
     private val updateProgressRunnable = object : Runnable {
         override fun run() {
@@ -79,14 +89,21 @@ class PlaybackActivity : AppCompatActivity() {
             when (event.eventID) {
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_STATUS -> {
                     val pts = event.doubleValue1
-                    Log.d(TAG, "event pts=$pts, isSeeking=$isSeeking, currentPosition=$currentPosition, seekTarget=$seekTargetPosition")
+                    val nowElapsedMs = SystemClock.elapsedRealtime()
+                    val deltaMs = if (lastPtsEventElapsedMs < 0) -1 else nowElapsedMs - lastPtsEventElapsedMs
+                    lastPtsEventElapsedMs = nowElapsedMs
+                    logApp(
+                        "D",
+                        "event pts=$pts, thread=${Thread.currentThread().name}, deltaMs=$deltaMs, " +
+                            "isSeeking=$isSeeking, currentPosition=$currentPosition, seekTarget=$seekTargetPosition"
+                    )
                     if (isSeeking) {
                         val jumpedToTarget = seekTargetPosition >= 0 && kotlin.math.abs(pts - seekTargetPosition) < 2.0
                         val bigJump = kotlin.math.abs(pts - currentPosition) > 3.0
                         if (jumpedToTarget || bigJump) {
                             isSeeking = false
                             seekTargetPosition = -1.0
-                            Log.d(TAG, "seek生效: jumpedToTarget=$jumpedToTarget, bigJump=$bigJump")
+                            logApp("D", "seek accepted: jumpedToTarget=$jumpedToTarget, bigJump=$bigJump")
                         } else {
                             // 还是旧位置，忽略事件，保持seek bar在用户拖动的位置
                             currentPosition = pts
@@ -103,6 +120,7 @@ class PlaybackActivity : AppCompatActivity() {
                     }
                 }
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_ENDED -> {
+                    logApp("I", "event ended, currentPosition=$currentPosition, thread=${Thread.currentThread().name}")
                     mainHandler.post {
                         if (!isReleased) {
                             isPlaying = false
@@ -114,6 +132,10 @@ class PlaybackActivity : AppCompatActivity() {
                 }
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_PLAYBACK_CACHING_CHANGED -> {
                     val state = event.longValue1.toInt()
+                    logApp(
+                        "I",
+                        "event caching state=$state, currentPosition=$currentPosition, thread=${Thread.currentThread().name}"
+                    )
                     mainHandler.post {
                         if (!isReleased) {
                             when (state) {
@@ -135,6 +157,8 @@ class PlaybackActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppLogging()
+        configureSdkLogging()
 
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         supportActionBar?.hide()
@@ -144,6 +168,7 @@ class PlaybackActivity : AppCompatActivity() {
 
         cameraIp = intent.getStringExtra(EXTRA_IP)
         videoFileName = intent.getStringExtra(EXTRA_FILENAME)
+        logApp("I", "onCreate ip=$cameraIp, file=$videoFileName")
 
         if (cameraIp.isNullOrBlank() || videoFileName.isNullOrBlank()) {
             showErrorAndFinish("Missing IP or filename")
@@ -159,6 +184,11 @@ class PlaybackActivity : AppCompatActivity() {
                 override fun surfaceCreated(holder: SurfaceHolder) {
                     surface = holder.surface
                     surfaceReady = true
+                    logApp(
+                        "I",
+                        "surfaceCreated valid=${holder.surface?.isValid == true}, " +
+                            "thread=${Thread.currentThread().name}"
+                    )
                 }
 
                 override fun surfaceChanged(
@@ -170,6 +200,11 @@ class PlaybackActivity : AppCompatActivity() {
                     surface = holder.surface
                     surfaceWidth = width
                     surfaceHeight = height
+                    logApp(
+                        "I",
+                        "surfaceChanged format=$format, width=$width, height=$height, " +
+                            "valid=${holder.surface?.isValid == true}, hasStarted=$hasStarted"
+                    )
                     if (!hasStarted && surfaceReady) {
                         hasStarted = true
                         executor.execute { startPlayback(cameraIp!!, videoFileName!!) }
@@ -179,6 +214,7 @@ class PlaybackActivity : AppCompatActivity() {
                 override fun surfaceDestroyed(holder: SurfaceHolder) {
                     surface = null
                     surfaceReady = false
+                    logApp("W", "surfaceDestroyed thread=${Thread.currentThread().name}")
                 }
             })
             setOnClickListener { toggleControls() }
@@ -237,7 +273,7 @@ class PlaybackActivity : AppCompatActivity() {
 
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {
                     isSeeking = true
-                    Log.d(TAG, "seek start: progress=${seekBar?.progress}, isSeeking=true")
+                    logApp("D", "seek start: progress=${seekBar?.progress}, isSeeking=true")
                 }
 
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
@@ -245,14 +281,14 @@ class PlaybackActivity : AppCompatActivity() {
                     if (totalDuration > 0) {
                         val seekPos = progress / 1000.0 * totalDuration
                         seekTargetPosition = seekPos
-                        Log.d(TAG, "seek stop: progress=$progress, target=$seekPos, isSeeking stays true")
+                        logApp("D", "seek stop: progress=$progress, target=$seekPos, isSeeking stays true")
                         executor.execute {
                             try {
-                                Log.d(TAG, "calling seek($seekPos)")
+                                logApp("D", "calling seek($seekPos)")
                                 videoPlayback?.seek(seekPos)
-                                Log.d(TAG, "seek returned")
+                                logApp("D", "seek returned")
                             } catch (e: Exception) {
-                                Log.d(TAG, "seek exception: ${e.message}")
+                                logApp("E", "seek exception: ${e.message}", e)
                                 // seek失败，放开锁定
                                 mainHandler.post {
                                     isSeeking = false
@@ -294,14 +330,48 @@ class PlaybackActivity : AppCompatActivity() {
         setContentView(rootLayout)
     }
 
+    private fun configureAppLogging() {
+        try {
+            val logDir = filesDir.resolve("applogs")
+            logDir.mkdirs()
+            appLogFile = logDir.resolve("playback_debug_${System.currentTimeMillis()}.log")
+            logApp("I", "App logging enabled, filePath=${appLogFile?.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to enable app file logging: ${e.message}")
+        }
+    }
+
+    private fun configureSdkLogging() {
+        try {
+            val logger = ICatchPancamLog.getInstance()
+            logger.setSystemLogOutput(true)
+            logger.setDebugMode(true)
+            logger.setLog(ICatchGLLogType.ICH_GL_LOG_TYPE_STREAM, true)
+            logger.setLog(ICatchGLLogType.ICH_GL_LOG_TYPE_COMMON, true)
+            logger.setLog(ICatchGLLogType.ICH_GL_LOG_TYPE_DEVELOP, true)
+            logger.setLog(ICatchGLLogType.ICH_GL_LOG_TYPE_OPENGL, true)
+
+            val logDir = filesDir.resolve("sdklogs")
+            logDir.mkdirs()
+            logger.setFileLogPath(logDir.absolutePath)
+            logger.setFileLogOutput(true)
+            logApp("I", "SDK logging enabled, fileLogPath=${logDir.absolutePath}")
+        } catch (e: Exception) {
+            logApp("W", "Failed to enable SDK logging: ${e.message}", e)
+        }
+    }
+
     private fun startPlayback(ip: String, fileName: String) {
         try {
+            logApp("I", "startPlayback begin ip=$ip, file=$fileName, thread=${Thread.currentThread().name}")
             val transport = ICatchINETTransport(ip)
             session = ICatchPancamSession.createSession()
+            logApp("I", "session created=${session != null}")
 
             val metrics = resources.displayMetrics
             val ppi = ICatchGLDisplayPPI(metrics.xdpi, metrics.ydpi)
             val prepared = session?.prepareSession(transport, ICatchGLColor.BLACK, ppi) ?: false
+            logApp("I", "prepareSession result=$prepared")
 
             if (!prepared) {
                 showErrorAndFinish("Failed to prepare session")
@@ -309,12 +379,14 @@ class PlaybackActivity : AppCompatActivity() {
             }
 
             videoPlayback = session?.videoPlayback
+            logApp("I", "videoPlayback ready=${videoPlayback != null}")
             if (videoPlayback == null) {
                 showErrorAndFinish("Failed to get video playback")
                 return
             }
 
             pancamControl = session?.getControl()
+            logApp("I", "pancamControl ready=${pancamControl != null}")
             try {
                 pancamControl?.addEventListener(
                     ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_STATUS,
@@ -328,10 +400,17 @@ class PlaybackActivity : AppCompatActivity() {
                     ICatchGLEventID.ICH_GL_EVENT_VIDEO_PLAYBACK_CACHING_CHANGED,
                     streamStateListener
                 )
-            } catch (_: Exception) {
+                logApp("I", "event listeners registered")
+            } catch (e: Exception) {
+                logApp("W", "failed to register event listeners: ${e.message}", e)
             }
 
             val currentSurface = surface
+            logApp(
+                "I",
+                "surface check ready=${currentSurface != null}, valid=${currentSurface?.isValid == true}, " +
+                    "width=$surfaceWidth, height=$surfaceHeight"
+            )
             if (currentSurface == null || !currentSurface.isValid) {
                 showErrorAndFinish("Surface not ready")
                 return
@@ -339,6 +418,7 @@ class PlaybackActivity : AppCompatActivity() {
 
             val surfaceContext = ICatchSurfaceContext(currentSurface)
             val renderEnabled = videoPlayback?.enableRender(surfaceContext) ?: false
+            logApp("I", "enableRender result=$renderEnabled")
             if (!renderEnabled) {
                 showErrorAndFinish("Failed to enable render")
                 return
@@ -347,7 +427,9 @@ class PlaybackActivity : AppCompatActivity() {
             if (surfaceWidth > 0 && surfaceHeight > 0) {
                 try {
                     surfaceContext.setViewPort(0, 0, surfaceWidth, surfaceHeight)
-                } catch (_: Exception) {
+                    logApp("I", "setViewPort width=$surfaceWidth, height=$surfaceHeight")
+                } catch (e: Exception) {
+                    logApp("W", "setViewPort failed: ${e.message}", e)
                 }
             }
 
@@ -366,13 +448,15 @@ class PlaybackActivity : AppCompatActivity() {
                 0
             )
 
-            val playResult = videoPlayback?.play(iCatchFile, true, true) ?: false
+            val playResult = videoPlayback?.play(iCatchFile, true, true, 3.0) ?: false
+            logApp("I", "play result=$playResult, filePath=$filePath")
             if (!playResult) {
                 showErrorAndFinish("Failed to start playback")
                 return
             }
 
             val resumeResult = videoPlayback?.resume() ?: false
+            logApp("I", "resume result=$resumeResult")
             if (!resumeResult) {
                 showErrorAndFinish("Failed to resume playback")
                 return
@@ -388,7 +472,9 @@ class PlaybackActivity : AppCompatActivity() {
                 updateTimeText(0.0, totalDuration)
                 mainHandler.post(updateProgressRunnable)
             }
+            logApp("I", "startPlayback end totalDuration=$totalDuration")
         } catch (e: Exception) {
+            logApp("E", "startPlayback exception: ${e.message}", e)
             showErrorAndFinish("Playback error: ${e.message}")
         }
     }
@@ -397,7 +483,8 @@ class PlaybackActivity : AppCompatActivity() {
         executor.execute {
             try {
                 if (isPaused) {
-                    videoPlayback?.resume()
+                    val result = videoPlayback?.resume()
+                    logApp("I", "togglePlayPause resume result=$result")
                     isPaused = false
                     mainHandler.post {
                         if (!isReleased) {
@@ -407,6 +494,7 @@ class PlaybackActivity : AppCompatActivity() {
                     }
                 } else {
                     videoPlayback?.pause()
+                    logApp("I", "togglePlayPause pause called")
                     isPaused = true
                     mainHandler.post {
                         if (!isReleased) {
@@ -415,7 +503,8 @@ class PlaybackActivity : AppCompatActivity() {
                         }
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                logApp("E", "togglePlayPause exception: ${e.message}", e)
             }
         }
     }
@@ -453,46 +542,61 @@ class PlaybackActivity : AppCompatActivity() {
 
     private fun release() {
         if (isReleased) return
+        logApp("I", "release begin")
         isReleased = true
         mainHandler.removeCallbacks(updateProgressRunnable)
         try {
+            logApp("I", "removeEventListener playing_status")
             pancamControl?.removeEventListener(
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_STATUS,
                 streamStateListener
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logApp("W", "removeEventListener playing_status failed: ${e.message}", e)
         }
         try {
+            logApp("I", "removeEventListener playing_ended")
             pancamControl?.removeEventListener(
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_STREAM_PLAYING_ENDED,
                 streamStateListener
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logApp("W", "removeEventListener playing_ended failed: ${e.message}", e)
         }
         try {
+            logApp("I", "removeEventListener caching_changed")
             pancamControl?.removeEventListener(
                 ICatchGLEventID.ICH_GL_EVENT_VIDEO_PLAYBACK_CACHING_CHANGED,
                 streamStateListener
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logApp("W", "removeEventListener caching_changed failed: ${e.message}", e)
         }
         try {
+            logApp("I", "videoPlayback.pause()")
             videoPlayback?.pause()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logApp("W", "videoPlayback.pause failed: ${e.message}", e)
         }
         try {
+            logApp("I", "videoPlayback.stop()")
             videoPlayback?.stop()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logApp("W", "videoPlayback.stop failed: ${e.message}", e)
         }
         try {
+            logApp("I", "session.destroySession()")
             session?.destroySession()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logApp("W", "session.destroySession failed: ${e.message}", e)
         }
         isPlaying = false
         executor.shutdown()
+        logApp("I", "release end")
     }
 
     private fun showErrorAndFinish(message: String) {
+        logApp("E", "showErrorAndFinish message=$message")
         mainHandler.post {
             if (!isFinishing && !isDestroyed) {
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -502,12 +606,61 @@ class PlaybackActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
+        logApp("I", "onBackPressed")
         release()
         super.onBackPressed()
     }
 
+    override fun onPause() {
+        logApp("I", "onPause isPlaying=$isPlaying, isPaused=$isPaused, currentPosition=$currentPosition")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        logApp("I", "onStop isPlaying=$isPlaying, isPaused=$isPaused, currentPosition=$currentPosition")
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        logApp("I", "onDestroy isFinishing=$isFinishing, isDestroyed=$isDestroyed")
         release()
         super.onDestroy()
+    }
+
+    private fun logApp(level: String, message: String, throwable: Throwable? = null) {
+        val fullMessage = buildString {
+            append(message)
+            if (throwable != null) {
+                append(" | exception=")
+                append(throwable::class.java.simpleName)
+                append(": ")
+                append(throwable.message)
+            }
+        }
+        when (level) {
+            "E" -> Log.e(TAG, fullMessage, throwable)
+            "W" -> Log.w(TAG, fullMessage, throwable)
+            "I" -> Log.i(TAG, fullMessage, throwable)
+            else -> Log.d(TAG, fullMessage, throwable)
+        }
+
+        val targetFile = appLogFile ?: return
+        val line = buildString {
+            append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date()))
+            append(" [")
+            append(level)
+            append("] [thread=")
+            append(Thread.currentThread().name)
+            append("] ")
+            append(fullMessage)
+            append('\n')
+        }
+        synchronized(appLogLock) {
+            try {
+                targetFile.appendText(line)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to append app log file: ${e.message}")
+            }
+        }
     }
 }
