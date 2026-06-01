@@ -1,10 +1,22 @@
 package top.tinyai.camvideoplayback
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSpecifier
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -28,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import top.tinyai.camvideoplayback.ui.theme.CamVideoPlaybackTheme
 
@@ -64,6 +79,118 @@ fun MainScreen() {
 
     var ipExpanded by remember { mutableStateOf(false) }
     var fileExpanded by remember { mutableStateOf(false) }
+
+    // WiFi connection state
+    val wifiSsid = "Guimeet_8C0055"
+    val wifiPassword = "1234567890"
+    var wifiStatus by remember { mutableStateOf("未连接") }
+    var wifiConnecting by remember { mutableStateOf(false) }
+    val handler = remember { Handler(Looper.getMainLooper()) }
+    var wifiNetworkCallback by remember { mutableStateOf<ConnectivityManager.NetworkCallback?>(null) }
+
+    // Get current WiFi SSID
+    fun getCurrentSsid(): String? {
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        @Suppress("DEPRECATION")
+        val info = wm.connectionInfo ?: return null
+        val ssid = info.ssid
+        return if (ssid != null && ssid != "<unknown ssid>" && ssid != "0x") {
+            ssid.removeSurrounding("\"")
+        } else null
+    }
+
+    fun cleanupWifi() {
+        wifiNetworkCallback?.let {
+            try {
+                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+        }
+        wifiNetworkCallback = null
+    }
+
+    @Suppress("NewApi")
+    fun connectWifi() {
+        cleanupWifi()
+
+        val currentSsid = getCurrentSsid()
+        if (currentSsid == wifiSsid) {
+            wifiStatus = "已连接到 $wifiSsid"
+            return
+        }
+
+        wifiConnecting = true
+        wifiStatus = "请确认系统弹出的连接对话框..."
+
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+        val specifier = WifiNetworkSpecifier.Builder()
+            .setSsid(wifiSsid)
+            .setWpa2Passphrase(wifiPassword)
+            .build()
+
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(specifier)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                super.onAvailable(network)
+                // Bind entire process to this network so SDK sockets use it
+                cm.bindProcessToNetwork(network)
+                handler.post {
+                    wifiConnecting = false
+                    wifiStatus = "已连接到 $wifiSsid"
+                }
+            }
+
+            override fun onUnavailable() {
+                super.onUnavailable()
+                handler.post {
+                    wifiConnecting = false
+                    wifiStatus = "连接失败，请手动连接 WiFi"
+                }
+            }
+
+            override fun onLost(network: Network) {
+                super.onLost(network)
+                handler.post {
+                    wifiConnecting = false
+                    wifiStatus = "WiFi 已断开"
+                }
+            }
+        }
+
+        wifiNetworkCallback = callback
+        try {
+            cm.requestNetwork(request, callback, 20_000)
+        } catch (e: SecurityException) {
+            wifiConnecting = false
+            wifiStatus = "权限不足: ${e.message}"
+        } catch (e: IllegalArgumentException) {
+            wifiConnecting = false
+            wifiStatus = "请求无效: ${e.message}"
+        }
+    }
+
+    // Permission launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            connectWifi()
+        } else {
+            wifiStatus = "需要位置权限才能连接 WiFi"
+        }
+    }
+
+    // Cleanup on dispose
+    DisposableEffect(Unit) {
+        onDispose { cleanupWifi() }
+    }
 
     Scaffold(
         topBar = {
@@ -160,6 +287,46 @@ fun MainScreen() {
                         )
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // WiFi connect button + status
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = {
+                        val perms = arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        )
+                        val hasPermission = perms.all {
+                            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                        }
+                        if (hasPermission) {
+                            connectWifi()
+                        } else {
+                            permissionLauncher.launch(perms)
+                        }
+                    },
+                    enabled = !wifiConnecting,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Text("连接 WiFi")
+                }
+                Text(
+                    text = wifiStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = when {
+                        wifiStatus.startsWith("已连接") -> MaterialTheme.colorScheme.primary
+                        wifiStatus.startsWith("连接中") || wifiStatus.startsWith("请确认") -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> MaterialTheme.colorScheme.error
+                    }
+                )
             }
 
             // Show the full path that will be used
